@@ -5,7 +5,7 @@
 它可以在常见 Linux 服务器上完成：
 
 - 菜单式操作：新建、更新、删除、只申请证书、查看状态
-- 选择部署 `Nginx + Certbot` 或 `Caddy`
+- 选择部署 `Nginx + acme.sh` 或 `Caddy`
 - 询问域名、邮箱、SSL 证书机构、站点类型
 - 支持选择 `Let's Encrypt` 或 `ZeroSSL` 申请 SSL 证书
 - 支持 HTTP 验证或 DNS API 验证
@@ -19,8 +19,9 @@
 - 支持反向代理到后端服务，例如 `http://127.0.0.1:3000`
 - 支持静态网站目录
 - 自动开放系统防火墙的 `80/tcp` 和 `443/tcp`
-- 为 Nginx 调用 Certbot 配置 HTTPS
-- 为 Caddy 写入 `Caddyfile`，由 Caddy 自动申请和续期证书
+- 为 Nginx 调用 acme.sh 申请并配置 HTTPS
+- 为 Caddy 写入独立站点配置文件，由 Caddy 自动申请和续期证书
+- 配置失败时自动回滚已修改的 Nginx/Caddy 配置文件
 
 ## 使用方法
 
@@ -73,13 +74,29 @@ sudo bash deploy-web.sh
 /etc/deploy-web/sites/
 ```
 
-状态记录包含域名、Web 服务、站点模式、证书机构、验证方式、反向代理后端、静态目录和证书路径。DNS API Token 不会写进状态文件；acme.sh 会把续期所需凭据保存在 `/root/.acme.sh`。
+状态记录包含域名、Web 服务、站点模式、证书机构、验证方式、反向代理后端、静态目录、Web 配置文件路径和证书路径。DNS API Token 不会写进状态文件；acme.sh 会把续期所需凭据保存在 `/root/.acme.sh`。
+
+## Caddy 多站点
+
+Caddy 会使用主配置文件导入独立站点配置：
+
+```text
+/etc/caddy/Caddyfile
+/etc/caddy/conf.d/你的域名.caddy
+```
+
+删除 Caddy 站点时，脚本只删除对应的 `conf.d` 站点文件，不会清空整个 `Caddyfile`。
+
+## 配置回滚
+
+脚本写入 Nginx/Caddy 配置前会保存事务备份。如果配置校验、证书申请后的正式配置、或服务 reload 失败，会自动恢复修改前的配置，并尝试 reload 回旧状态。
 
 ## DNS 解析预检查
 
 部署前，脚本会尝试获取本机公网 IPv4/IPv6，并检查配置域名的 A/AAAA 记录。
 
 - HTTP 验证：域名通常必须解析到本机公网 IP，否则证书申请会失败。
+- Nginx 的 HTTP 验证使用 acme.sh webroot 模式，临时校验目录为 `/var/www/deploy-web-acme`。
 - DNS API 验证：证书申请本身不依赖域名解析到本机，但部署后访问仍然需要正确解析。
 - 如果使用 Cloudflare 代理模式，解析结果可能是 Cloudflare IP，脚本会提示不匹配，并允许你确认后继续。
 
@@ -116,7 +133,7 @@ www.你的域名
 
 脚本部署完成后会检查续期机制：
 
-- Nginx + HTTP 验证：启用 `certbot.timer`，并可选择执行 `certbot renew --dry-run`。
+- Nginx + HTTP/DNS 验证：使用 `acme.sh` 创建续期任务，续期后自动 reload Nginx。
 - Caddy 普通自动 HTTPS：Caddy 自身负责证书续期。
 - DNS API 验证：`acme.sh` 会创建 cron 续期任务，续期后自动 reload Nginx 或 Caddy。
 
@@ -185,12 +202,12 @@ Route53 等待秒数，可留空
 ## 注意事项
 
 - 运行前请确认域名已经解析到服务器公网 IP。
-- Nginx 模式下，脚本会创建站点配置，并使用 Certbot 申请证书。
-- Caddy 模式下，脚本会尽量启用 Caddy 官方软件源，然后覆盖 `/etc/caddy/Caddyfile`，覆盖前会自动备份。
+- Nginx 模式下，脚本会创建站点配置，并使用 acme.sh 申请和安装证书。
+- Caddy 模式下，脚本会尽量启用 Caddy 官方软件源，并使用 `/etc/caddy/conf.d/` 管理独立站点配置。
 - HTTP 验证需要公网可以访问服务器 `80` 端口。
 - DNS API 验证不依赖 `80` 端口申请证书，但脚本仍会开放 `80/443`，方便 HTTP 跳转 HTTPS。
 - 选择 ZeroSSL 时，需要输入 ZeroSSL 后台提供的 `EAB KID` 和 `EAB HMAC Key`。
 - DNS API 凭据会被 `acme.sh` 保存到 `/root/.acme.sh`，用于后续自动续期。
 - 如果同时配置 `www`，请确保 `www` 记录也已经解析到服务器，或在 Cloudflare 中配置好对应记录。
-- 已存在的站点配置文件会备份为 `.bak.时间戳`。
+- 配置事务失败时会自动回滚；正常部署成功后不会保留临时事务备份。
 - 如果服务器网络无法访问软件源或证书机构，安装或证书签发会失败；这种情况下先检查 DNS、出站网络和云厂商安全组。
